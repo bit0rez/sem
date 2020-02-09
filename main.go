@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"log"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -12,10 +11,20 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	log "github.com/sirupsen/logrus"
 	"sem/internal/positions"
 )
 
 func main() {
+	logger := log.New()
+	logger.SetOutput(os.Stdout)
+	// TODO: configure log level
+	log.SetLevel(log.DebugLevel)
+	logger.SetFormatter(&log.TextFormatter{
+		FullTimestamp: true,
+	})
+
+	// TODO: Config and check drivers
 	database, err := sql.Open("sqlite3", "./positions.db")
 	if err != nil {
 		panic(err)
@@ -25,46 +34,47 @@ func main() {
 	}
 	defer database.Close()
 
-	logger := log.New(os.Stdout, "[SEM] ", log.LstdFlags)
-
-	p := positions.NewPositions(database, logger)
-	err = p.Prepare()
-	if err != nil {
-		panic(err)
-	}
-
-	handler := http.NewServeMux()
+	router := http.NewServeMux()
 	server := &http.Server{
 		Addr:           ":9080",
-		Handler:        handler,
+		Handler:        router,
 		ReadTimeout:    1 * time.Second,
-		WriteTimeout:   2 * time.Second,
+		WriteTimeout:   10 * time.Second,
 		MaxHeaderBytes: 4096,
 	}
 
-	// Subscribe monitoring route
-	handler.Handle("/metrics", promhttp.Handler())
+	// Handle metrics
+	router.Handle("/metrics", promhttp.Handler())
 
 	// Subscribe profiler routes
-	handler.Handle("/debug/pprof/", http.HandlerFunc(pprof.Index))
-	handler.Handle("/debug/pprof/cmdline", http.HandlerFunc(pprof.Cmdline))
-	handler.Handle("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
-	handler.Handle("/debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
-	handler.Handle("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
+	// TODO: if debug enabled
+	router.Handle("/debug/pprof/", http.HandlerFunc(pprof.Index))
+	router.Handle("/debug/pprof/cmdline", http.HandlerFunc(pprof.Cmdline))
+	router.Handle("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
+	router.Handle("/debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
+	router.Handle("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
 
-	handler.Handle("/api/summary", p.RequireDomainHandler(http.HandlerFunc(p.HandleSummary)))
-	handler.Handle("/api/positions", p.RequireDomainHandler(http.HandlerFunc(p.HandlePositions)))
+	// Instantiate service and register service routes
+	_, err = positions.NewService(database, router, logger)
+	if err != nil {
+		logger.Fatalln(err)
+	}
 
+	// Register OS signal router
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Kill, os.Interrupt)
 	go func(ch <-chan os.Signal, server *http.Server) {
 		<-ch
-		_ = server.Close()
+		ctx, _ := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = server.Shutdown(ctx)
 	}(sigChan, server)
 
-	logger.Println("Server started at http://0.0.0.0:9080/")
+	// Serve
+	logger.Infoln("Server started at http://0.0.0.0:9080/")
 	if err := server.ListenAndServe(); err != nil {
-		logger.Fatal(err)
+		if err != http.ErrServerClosed {
+			logger.Fatal(err)
+		}
 	}
-	logger.Println("Server stopped.")
+	logger.Infoln("Server stopped.")
 }

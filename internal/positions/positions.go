@@ -3,72 +3,76 @@ package positions
 import (
 	"context"
 	"database/sql"
-	"log"
+	"fmt"
+	"net/http"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
-type Positions struct {
-	db        *sql.DB
-	logger    *log.Logger
-	summary   *sql.Stmt
-	positions *sql.Stmt
+const ID = "positions"
+
+type Service struct {
+	db     *sql.DB
+	logger *logrus.Logger
 }
 
-func NewPositions(db *sql.DB, logger *log.Logger) *Positions {
-	p := &Positions{
-		db:        db,
-		logger:    logger,
-		summary:   nil,
-		positions: nil,
+func NewService(db *sql.DB, router *http.ServeMux, logger *logrus.Logger) (*Service, error) {
+	p := &Service{
+		db:     db,
+		logger: logger,
 	}
-	return p
+	if err := p.registerHttpRoutes(router); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
-func (p *Positions) Prepare() error {
-	var err error
-	p.summary, err = p.db.Prepare("SELECT position FROM positions WHERE domain = :domain")
-	if err != nil {
-		p.logger.Println(err)
-		return err
-	}
-
-	p.positions, err = p.db.Prepare("SELECT keyword, position, url, volume, results, cpc, updated FROM positions WHERE domain = :domain LIMIT :l OFFSET :o")
-	if err != nil {
-		p.logger.Println(err)
-		return err
-	}
-
-	return nil
-}
-
-func (p *Positions) Summary(domain string) (uint64, error) {
+// Return sum of positions by domain
+func (s *Service) Summary(domain string) (int64, error) {
 	ctxt, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
-	rows, err := p.summary.QueryContext(ctxt, domain)
+
+	row := s.db.QueryRowContext(ctxt, "SELECT SUM(position) as summary FROM positions WHERE domain = ?", domain)
+	if row == nil {
+		return 0, nil
+	}
+
+	var summary sql.NullInt64
+	err := row.Scan(&summary)
 	if err != nil {
-		p.logger.Println(err)
 		return 0, err
 	}
-	defer rows.Close()
-	var position, summary uint64
-	for rows.Next() {
-		err = rows.Scan(&position)
-		if err != nil {
-			p.logger.Println(err)
-			return 0, err
-		}
-		summary += position
+	if !summary.Valid {
+		return 0, err
 	}
 
-	return summary, nil
+	return summary.Int64, nil
 }
 
-func (p *Positions) Positions(domain string, limit, offset int) ([]*Position, error) {
+// Return list of positions by domain
+func (s *Service) Positions(domain string, limit, offset int, orderBy string) ([]*Position, error) {
+	if orderBy == "" {
+		orderBy = "volume"
+	}
+
+	query := fmt.Sprintf(`SELECT keyword, position, url, volume, results, cpc, updated
+		FROM positions
+		WHERE domain = ?
+		ORDER BY %s ASC
+		LIMIT ?
+		OFFSET ?`,
+		orderBy,
+	)
+
 	ctxt, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
-	rows, err := p.positions.QueryContext(ctxt, domain, limit, offset)
+
+	rows, err := s.db.QueryContext(ctxt, query, domain, limit, offset)
 	if err != nil {
-		p.logger.Println(err)
+		if err == sql.ErrNoRows {
+			return make([]*Position, 0, 0), nil
+		}
 		return nil, err
 	}
 	defer rows.Close()
@@ -86,11 +90,21 @@ func (p *Positions) Positions(domain string, limit, offset int) ([]*Position, er
 			&pos.Updated,
 		)
 		if err != nil {
-			p.logger.Println(err)
 			return nil, err
 		}
 		result = append(result, pos)
 	}
 
 	return result, nil
+}
+
+func checkOrder(orderBy string) error {
+	// TODO: generate fields list
+	for _, field := range []string{"", "volume", "results", "updated", "cpc", "url", "position", "keyword"} {
+		if field == orderBy {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("Unknown field '%s' in order", orderBy)
 }
