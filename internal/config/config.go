@@ -11,9 +11,9 @@ import (
 
 type Main struct {
 	DebugMode bool
-	DbDriver string
-	DbPath string
-	LogLevel uint
+	DbDriver  string
+	DbPath    string
+	LogLevel  uint
 }
 
 func (m *Main) Validate() error {
@@ -24,7 +24,7 @@ func (m *Main) Validate() error {
 	if m.DbPath == "" {
 		return errors.New("Database path MUST be specified")
 	}
-	
+
 	if !validSQLDriver(m.DbDriver) {
 		return fmt.Errorf("Database driver MUST be one of %+v", sql.Drivers())
 	}
