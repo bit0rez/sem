@@ -1,0 +1,5 @@
+*
+!internal
+!main.go
+!go.*
+!Makefile

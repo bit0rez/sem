@@ -1,0 +1,21 @@
+version: '3.5'
+services:
+  sem:
+    build:
+      context: .
+    command:
+    - -debug
+    - -loglevel
+    - '5'
+    - -dbdriver
+    - sqlite3
+    - -dbpath
+    - /positions.db
+    tty: true
+    volumes:
+    - ./positions.db:/positions.db
+    stop_signal: SIGKILL
+    sysctls:
+    - net.core.somaxconn=1024
+    ports:
+    - 9080:9080
