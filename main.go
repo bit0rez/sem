@@ -12,47 +12,53 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
+	"sem/internal/config"
 	"sem/internal/positions"
 )
 
 func main() {
+	// Parse config
+	conf, err := config.ParseFlags()
+	if err != nil {
+		panic(err)
+	}
+
+	// Configure logger
 	logger := log.New()
 	logger.SetOutput(os.Stdout)
-	// TODO: configure log level
-	log.SetLevel(log.DebugLevel)
+	log.SetLevel(log.Level(conf.LogLevel))
 	logger.SetFormatter(&log.TextFormatter{
 		FullTimestamp: true,
 	})
 
-	// TODO: Config and check drivers
-	database, err := sql.Open("sqlite3", "./positions.db")
+	// Configure database
+	database, err := sql.Open(conf.DbDriver, conf.DbPath)
 	if err != nil {
-		panic(err)
-	}
-	if err = database.PingContext(context.Background()); err != nil {
 		panic(err)
 	}
 	defer database.Close()
 
+	// Instantiate HTTP server and router
 	router := http.NewServeMux()
 	server := &http.Server{
 		Addr:           ":9080",
 		Handler:        router,
 		ReadTimeout:    1 * time.Second,
-		WriteTimeout:   10 * time.Second,
-		MaxHeaderBytes: 4096,
+		WriteTimeout:   2 * time.Second,
+		MaxHeaderBytes: 512,
 	}
 
 	// Handle metrics
 	router.Handle("/metrics", promhttp.Handler())
 
 	// Subscribe profiler routes
-	// TODO: if debug enabled
-	router.Handle("/debug/pprof/", http.HandlerFunc(pprof.Index))
-	router.Handle("/debug/pprof/cmdline", http.HandlerFunc(pprof.Cmdline))
-	router.Handle("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
-	router.Handle("/debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
-	router.Handle("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
+	if conf.DebugMode {
+		router.Handle("/debug/pprof/", http.HandlerFunc(pprof.Index))
+		router.Handle("/debug/pprof/cmdline", http.HandlerFunc(pprof.Cmdline))
+		router.Handle("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
+		router.Handle("/debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
+		router.Handle("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
+	}
 
 	// Instantiate service and register service routes
 	_, err = positions.NewService(database, router, logger)
